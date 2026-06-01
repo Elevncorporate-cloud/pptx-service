@@ -38,8 +38,43 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).parent
 TEMPLATES_DIR = ROOT / "templates"
+# Auto-création du dossier templates/ + migration depuis la racine si besoin
+TEMPLATES_DIR.mkdir(exist_ok=True)
+for _pptx in ROOT.glob("*.pptx"):
+    target = TEMPLATES_DIR / _pptx.name
+    if not target.exists():
+        try:
+            _pptx.replace(target)
+        except Exception:
+            # fallback: copie
+            import shutil
+            shutil.copy2(_pptx, target)
+# Emplacements alternatifs supportés
+TEMPLATE_SEARCH_DIRS = [TEMPLATES_DIR, ROOT]
 OUTPUT_DIR = ROOT / "out"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def _find_template(template_id: str) -> Path | None:
+    name = f"{template_id}.pptx"
+    for d in TEMPLATE_SEARCH_DIRS:
+        p = d / name
+        if p.exists():
+            return p
+    return None
+
+
+def _list_templates() -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for d in TEMPLATE_SEARCH_DIRS:
+        if not d.exists():
+            continue
+        for p in sorted(d.glob("*.pptx")):
+            if p.stem not in seen:
+                seen.add(p.stem)
+                out.append(p.stem)
+    return out
 
 API_KEY = os.environ.get("PPTX_API_KEY", "")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8080")
@@ -185,9 +220,13 @@ def _replace_image_placeholder(shape, photo_bytes: bytes) -> bool:
 
 
 def render_pptx(payload: CvPayload) -> Path:
-    template_file = TEMPLATES_DIR / f"{payload.templateId}.pptx"
-    if not template_file.exists():
-        raise HTTPException(404, f"Template introuvable: {payload.templateId}")
+    template_file = _find_template(payload.templateId)
+    if template_file is None:
+        available = _list_templates()
+        raise HTTPException(
+            404,
+            f"Template introuvable: {payload.templateId}. Disponibles: {available}",
+        )
 
     prs = Presentation(template_file)
     mapping = _build_replacement_map(payload)
@@ -235,6 +274,14 @@ def convert_to_pdf(pptx_path: Path) -> Path:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/templates")
+def list_templates() -> dict[str, Any]:
+    return {
+        "templates": _list_templates(),
+        "searchDirs": [str(d) for d in TEMPLATE_SEARCH_DIRS],
+    }
 
 
 @app.post("/generate")
